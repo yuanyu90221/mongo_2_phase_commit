@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
@@ -17,6 +18,7 @@ import (
 
 var globalDB *mgo.Database
 var account = "json"
+var mu = &sync.Mutex{}
 
 type currency struct {
 	ID      bson.ObjectId `json:"id" bson:"_id,omitempty"`
@@ -27,6 +29,8 @@ type currency struct {
 
 func pay(w http.ResponseWriter, r *http.Request) {
 	entry := currency{}
+	mu.Lock()
+	defer mu.Unlock()
 	// step 1: get current amount
 	err := globalDB.C("bank").Find(bson.M{"account": account}).One(&entry)
 

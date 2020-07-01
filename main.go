@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	_ "github.com/joho/godotenv/autoload"
@@ -17,6 +18,13 @@ import (
 
 var globalDB *mgo.Database
 var account = "json"
+var in chan string
+var out chan result
+
+type result struct {
+	Account string
+	Result  float64
+}
 
 type currency struct {
 	ID      bson.ObjectId `json:"id" bson:"_id,omitempty"`
@@ -26,26 +34,20 @@ type currency struct {
 }
 
 func pay(w http.ResponseWriter, r *http.Request) {
-	entry := currency{}
-	// step 1: get current amount
-	err := globalDB.C("bank").Find(bson.M{"account": account}).One(&entry)
-
-	if err != nil {
-		panic(err)
-	}
-
-	wait := Random(1, 100)
-	time.Sleep(time.Duration(wait) * time.Millisecond)
-
-	// step 3: subtract current balance and update back to the db
-	entry.Amount = entry.Amount + 50.000
-	err = globalDB.C("bank").UpdateId(entry.ID, &entry)
-
-	if err != nil {
-		panic("update error")
-	}
-
-	fmt.Printf("%+v\n", entry)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func(wg *sync.WaitGroup) {
+		in <- account
+		for {
+			select {
+			case data := <-out:
+				fmt.Printf("%+v\n", data)
+				wg.Done()
+				return
+			}
+		}
+	}(&wg)
+	wg.Wait()
 	io.WriteString(w, "ok")
 }
 func Random(min, max int) int {
@@ -53,6 +55,9 @@ func Random(min, max int) int {
 	return rand.Intn(max-min+1) + min
 }
 func main() {
+	in = make(chan string)
+	out = make(chan result)
+
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
 		port = "8000"
@@ -67,6 +72,33 @@ func main() {
 	if err != nil {
 		panic("Insert error")
 	}
+
+	go func(in *chan string) {
+		for {
+			select {
+			case account := <-*in:
+				entry := currency{}
+				// step 1: get current amount
+				err := globalDB.C("bank").Find(bson.M{"account": account}).One(&entry)
+
+				if err != nil {
+					panic(err)
+				}
+				// step 3: subtract current balance and update back to the db
+				entry.Amount = entry.Amount + 50.000
+				err = globalDB.C("bank").UpdateId(entry.ID, &entry)
+
+				if err != nil {
+					panic("update error")
+				}
+
+				out <- result{
+					Account: account,
+					Result:  entry.Amount,
+				}
+			}
+		}
+	}(&in)
 	log.Println("Listen server on " + port + " port")
 	http.HandleFunc("/", pay)
 

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,8 +19,10 @@ import (
 
 var globalDB *mgo.Database
 var account = "json"
-var in chan string
-var out chan result
+var in []chan string
+var out []chan result
+var maxUser = 100
+var maxThread = 10
 
 type result struct {
 	Account string
@@ -37,10 +40,14 @@ func pay(w http.ResponseWriter, r *http.Request) {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func(wg *sync.WaitGroup) {
-		in <- account
+		number := Random(1, maxUser)
+		channelNumber := number % maxThread
+		account := "user" + strconv.Itoa(number)
+
+		in[channelNumber] <- account
 		for {
 			select {
-			case data := <-out:
+			case data := <-out[channelNumber]:
 				fmt.Printf("%+v\n", data)
 				wg.Done()
 				return
@@ -55,8 +62,8 @@ func Random(min, max int) int {
 	return rand.Intn(max-min+1) + min
 }
 func main() {
-	in = make(chan string)
-	out = make(chan result)
+	in = make([]chan string, maxThread)
+	out = make([]chan result, maxThread)
 
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
@@ -67,38 +74,47 @@ func main() {
 	globalDB = session.DB("test")
 	globalDB.C("bank").DropCollection()
 
-	user := currency{Account: account, Amount: 1000.00, Code: "USD"}
-	err := globalDB.C("bank").Insert(&user)
-	if err != nil {
-		panic("Insert error")
+	for i := range in {
+		in[i] = make(chan string)
+		out[i] = make(chan result)
 	}
 
-	go func(in *chan string) {
-		for {
-			select {
-			case account := <-*in:
-				entry := currency{}
-				// step 1: get current amount
-				err := globalDB.C("bank").Find(bson.M{"account": account}).One(&entry)
+	for i := 0; i < maxUser; i++ {
+		account = "user" + strconv.Itoa(i+1)
+		user := currency{Account: account, Amount: 1000.00, Code: "USD"}
+		if err := globalDB.C("bank").Insert(&user); err != nil {
+			panic("insert error")
+		}
+	}
+	for i := range in {
+		go func(in *chan string, i int) {
+			for {
+				select {
+				case account := <-*in:
+					entry := currency{}
+					// step 1: get current amount
+					err := globalDB.C("bank").Find(bson.M{"account": account}).One(&entry)
 
-				if err != nil {
-					panic(err)
-				}
-				// step 3: subtract current balance and update back to the db
-				entry.Amount = entry.Amount + 50.000
-				err = globalDB.C("bank").UpdateId(entry.ID, &entry)
+					if err != nil {
+						panic(err)
+					}
+					// step 3: subtract current balance and update back to the db
+					entry.Amount = entry.Amount + 50.000
+					err = globalDB.C("bank").UpdateId(entry.ID, &entry)
 
-				if err != nil {
-					panic("update error")
-				}
+					if err != nil {
+						panic("update error")
+					}
 
-				out <- result{
-					Account: account,
-					Result:  entry.Amount,
+					out[i] <- result{
+						Account: account,
+						Result:  entry.Amount,
+					}
 				}
 			}
-		}
-	}(&in)
+		}(&in[i], i)
+	}
+
 	log.Println("Listen server on " + port + " port")
 	http.HandleFunc("/", pay)
 

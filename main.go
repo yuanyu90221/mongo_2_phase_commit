@@ -25,12 +25,12 @@ type currency struct {
 	Amount  float64       `bson:"amount"`
 	Account string        `bson:"account"`
 	Code    string        `bson:"code"`
+	Version int           `bson:"version"`
 }
 
 func pay(w http.ResponseWriter, r *http.Request) {
 	entry := currency{}
-	mu.Lock()
-	defer mu.Unlock()
+LOOP:
 	// step 1: get current amount
 	err := globalDB.C("bank").Find(bson.M{"account": account}).One(&entry)
 
@@ -43,10 +43,16 @@ func pay(w http.ResponseWriter, r *http.Request) {
 
 	// step 3: subtract current balance and update back to the db
 	entry.Amount = entry.Amount + 50.000
-	err = globalDB.C("bank").UpdateId(entry.ID, &entry)
+	err = globalDB.C("bank").Update(bson.M{
+		"version": entry.Version,
+		"_id":     entry.ID,
+	}, bson.M{"$set": map[string]interface{}{
+		"amount":  entry.Amount,
+		"version": (entry.Version + 1),
+	}})
 
 	if err != nil {
-		panic("update error")
+		goto LOOP
 	}
 
 	fmt.Printf("%+v\n", entry)
